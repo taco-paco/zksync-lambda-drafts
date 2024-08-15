@@ -1,0 +1,13 @@
+{
+  "name": "lambda-trigger",
+  "version": "1.0.0",
+  "description": "TS code that triggers lambdas",
+  "main": "index.js",
+  "author": "taco-paco <edwinswatpako@gmail.com>",
+  "license": "NONE",
+  "dependencies": {
+  },
+  "devDependencies": {
+    "typescript": "5.5.4"
+  }
+}
