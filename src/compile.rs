@@ -2,13 +2,13 @@ use aws_config::BehaviorVersion;
 use aws_sdk_dynamodb::types::AttributeValue;
 use lambda_runtime::{service_fn, Error, LambdaEvent};
 use serde::{Deserialize, Serialize};
+use tracing::{error, info};
 
 mod common;
 use crate::common::{Item, Status};
 
-// TODO: utl
-const QUEUE_URL_DEFAULT: &str = "todo";
-const TABLE_NAME_DEFAULT: &str = "todo";
+const QUEUE_URL_DEFAULT: &str = "https://sqs.ap-southeast-2.amazonaws.com/266735844848/zksync-sqs";
+const TABLE_NAME_DEFAULT: &str = "zksync-table";
 
 #[derive(Debug, Deserialize)]
 struct Request {
@@ -33,8 +33,9 @@ async fn compile(
     sqs_client: &aws_sdk_sqs::Client,
     queue_url: &str,
 ) {
-    // TODO: check s3 for files(?)
+    info!("Intitating compilation");
 
+    // TODO: check s3 for files(?)
     let result = dynamo_client
         .get_item()
         .key("ID", AttributeValue::S(id.clone()))
@@ -57,31 +58,51 @@ async fn compile(
         .send()
         .await
         .unwrap();
-    println!("dynamo_client::put_item response: {:?}", response);
+    info!("db put response: {:?}", response);
 
-    sqs_client
+    let message_output = sqs_client
         .send_message()
         .queue_url(queue_url)
         .message_body(id)
         .send()
         .await
         .unwrap();
+
+    info!(
+        "message sent to sqs: {}",
+        message_output.message_id.unwrap_or("empty_id".into())
+    );
 }
 
-async fn process_request(
-    request: Request,
+#[tracing::instrument(skip(event), fields(req_id = %event.context.request_id))]
+async fn process_event(
+    event: LambdaEvent<Request>,
     dynamo_client: &aws_sdk_dynamodb::Client,
     table_name: &str,
     sqs_client: &aws_sdk_sqs::Client,
     queue_url: &str,
 ) -> Response {
-    compile(request.id, dynamo_client, table_name, sqs_client, queue_url).await;
+    compile(
+        event.payload.id,
+        dynamo_client,
+        table_name,
+        sqs_client,
+        queue_url,
+    )
+    .await;
 
     Response {}
 }
 
 #[tokio::main]
 async fn main() -> Result<(), Error> {
+    tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::INFO)
+        .with_ansi(false)
+        .without_time() // CloudWatch will add the ingestion time
+        .with_target(false)
+        .init();
+
     let queue_url = std::env::var("QUEUE_URL").unwrap_or(QUEUE_URL_DEFAULT.into());
     let table_name = std::env::var("TABLE_NAME").unwrap_or(TABLE_NAME_DEFAULT.into());
 
@@ -91,14 +112,7 @@ async fn main() -> Result<(), Error> {
 
     lambda_runtime::run(service_fn(|event: LambdaEvent<Request>| async {
         Result::<_, Error>::Ok(
-            process_request(
-                event.payload,
-                &dynamo_client,
-                &table_name,
-                &sqs_client,
-                &queue_url,
-            )
-            .await,
+            process_event(event, &dynamo_client, &table_name, &sqs_client, &queue_url).await,
         )
     }))
     .await

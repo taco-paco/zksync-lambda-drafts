@@ -2,7 +2,7 @@ use aws_sdk_dynamodb::types::AttributeValue;
 use serde::Serialize;
 use std::collections::HashMap;
 
-pub const BUCKET_NAME_DEFAULT: &str = "zksync-compilation";
+pub const BUCKET_NAME_DEFAULT: &str = "zksync-compilation-s3";
 
 #[derive(Debug, Clone, Serialize)]
 pub enum Status {
