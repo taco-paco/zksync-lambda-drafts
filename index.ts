@@ -18,7 +18,12 @@ async function main() {
         }
     )
 
-    console.log("urls response:", response)
+    if (response.ok) {
+        const data = await response.json();
+        console.log("URLs response:", data);
+    } else {
+        console.error("Failed to fetch:", response.status, response.statusText);
+    }
 }
 
 

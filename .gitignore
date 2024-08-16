@@ -7,3 +7,7 @@ target
 # JS
 node_modules
 index.js
+
+# macOS
+/.DS_Store
+/lambdas/.DS_Store
