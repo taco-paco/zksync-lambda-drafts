@@ -2,12 +2,14 @@ use aws_config::BehaviorVersion;
 use aws_sdk_s3::presigning::PresigningConfig;
 use lambda_http::http::StatusCode;
 use lambda_http::{
-    lambda_runtime::Diagnostic, run, service_fn, Error as LambdaError, IntoResponse, LambdaEvent,
-    Request as LambdaRequest, RequestPayloadExt, Response as LambdaResponse,
+    run, service_fn, Error as LambdaError, IntoResponse, Request as LambdaRequest,
+    RequestPayloadExt, Response as LambdaResponse,
 };
 use serde::{Deserialize, Serialize};
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 use tracing::{error, Value};
+use uuid::Uuid;
 
 mod common;
 use common::BUCKET_NAME_DEFAULT;
@@ -20,55 +22,41 @@ const EXCEEDED_MAX_FILES_ERROR: &str = "Exceeded max number of files";
 
 #[derive(Debug, Deserialize)]
 struct Request {
-    pub files: Vec<String>,
+    pub files: Vec<PathBuf>,
     // TODO: add files_md5. Use set_content_md5 on object
 }
 
 #[derive(Debug, Serialize)]
 struct Response {
+    pub id: Uuid,
     pub presigned_urls: Vec<String>,
 }
 
-// TODO: check & contribute?
-// impl IntoResponse for Response {
-//     fn into_response(self) -> lambda_http::ResponseFuture {}
-// }
-
-// #[derive(thiserror::Error)]
-// enum Error {
-//     #[error("Exceeded max number of files: {0}")]
-//     ExceededMaxFilesError(usize),
-// }
-//
-// impl From<Error> for Diagnostic {
-//     fn from(value: Error) -> Self {
-//         match value {
-//             Error::ExceededMaxFilesError(_) => Diagnostic {
-//                 error_type: "ExceededMaxFilesError".into(),
-//                 error_message: value.to_string(),
-//             },
-//         }
-//     }
-// }
-
 async fn generate_presigned_urs(
-    files: Vec<String>,
+    files: Vec<PathBuf>,
     bucket_name: &str,
     s3_client: &aws_sdk_s3::Client,
-) -> Result<Vec<String>, LambdaError> {
+) -> Result<Response, LambdaError> {
+    let uuid = Uuid::new_v4();
+    let uuid_str = uuid.to_string();
+    let uuid_dir = Path::new(&uuid_str);
+
     let mut output = Vec::with_capacity(files.len());
     for file in files {
         let presigned = s3_client
             .put_object()
             .bucket(bucket_name)
-            .key(file)
+            .key(uuid_dir.join(file).to_string_lossy().to_string())
             .presigned(PresigningConfig::expires_in(OBJECT_EXPIRATION_TIME).map_err(Box::new)?)
             .await?;
 
         output.push(presigned.uri().into());
     }
 
-    Ok(output)
+    Ok(Response {
+        id: uuid,
+        presigned_urls: output,
+    })
 }
 
 #[tracing::instrument]
@@ -109,21 +97,17 @@ async fn process_request(
         return Ok(response);
     }
 
-    let urls = generate_presigned_urs(request.files, bucket_name, s3_client).await?;
+    let response = generate_presigned_urs(request.files, bucket_name, s3_client).await?;
     let response = LambdaResponse::builder()
         .status(StatusCode::OK)
         .header("Content-Type", "application/json")
-        .body(serde_json::to_string(&Response {
-            presigned_urls: urls,
-        })?)?;
+        .body(serde_json::to_string(&response)?)?;
 
     Ok(response)
 }
 
 #[tokio::main]
 async fn main() -> Result<(), LambdaError> {
-    println!("generate_presigned_urls");
-
     tracing_subscriber::fmt()
         .with_max_level(tracing::Level::INFO)
         .with_ansi(false)
@@ -132,7 +116,6 @@ async fn main() -> Result<(), LambdaError> {
         .init();
 
     let bucket_name = std::env::var("BUCKET_NAME").unwrap_or(BUCKET_NAME_DEFAULT.into());
-
     let aws_config = aws_config::load_defaults(BehaviorVersion::latest()).await;
     let s3_client = aws_sdk_s3::Client::new(&aws_config);
 
