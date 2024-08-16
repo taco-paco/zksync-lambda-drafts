@@ -12,6 +12,7 @@ use tracing::{error, Value};
 use uuid::Uuid;
 
 mod common;
+use crate::common::utils::extract_request;
 use common::BUCKET_NAME_DEFAULT;
 
 const MAX_FILES: usize = 300;
@@ -65,28 +66,7 @@ async fn process_request(
     bucket_name: &str,
     s3_client: &aws_sdk_s3::Client,
 ) -> Result<LambdaResponse<String>, LambdaError> {
-    let request = match request.payload::<Request>() {
-        Ok(Some(val)) => val,
-        Ok(None) => {
-            let response = LambdaResponse::builder()
-                .status(400)
-                .header("content-type", "text/html")
-                .body("Request payload is empty".into())
-                .map_err(Box::new)?;
-
-            return Ok(response);
-        }
-        Err(err) => {
-            let response = LambdaResponse::builder()
-                .status(400)
-                .header("content-type", "text/html")
-                .body(err.to_string().into())
-                .map_err(Box::new)?;
-
-            return Ok(response);
-        }
-    };
-
+    let request = extract_request(request)??;
     if request.files.len() > MAX_FILES {
         let response = LambdaResponse::builder()
             .status(400)
@@ -105,6 +85,8 @@ async fn process_request(
 
     Ok(response)
 }
+
+// TODO: setup ratelimiter for lambdas
 
 #[tokio::main]
 async fn main() -> Result<(), LambdaError> {
