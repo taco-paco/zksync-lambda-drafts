@@ -11,12 +11,6 @@ impl From<lambda_http::http::Error> for Error {
     }
 }
 
-impl From<lambda_http::Error> for Error {
-    fn from(value: lambda_http::Error) -> Self {
-        Self::LambdaError(value)
-    }
-}
-
 impl<T> From<Box<T>> for Error
 where
     T: std::error::Error + Send + Sync + 'static,

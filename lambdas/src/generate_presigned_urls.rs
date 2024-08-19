@@ -1,31 +1,29 @@
 use aws_config::BehaviorVersion;
 use aws_sdk_s3::presigning::PresigningConfig;
-use lambda_http::http::StatusCode;
 use lambda_http::{
-    run, service_fn, Error as LambdaError, IntoResponse, Request as LambdaRequest,
-    RequestPayloadExt, Response as LambdaResponse,
+    http::StatusCode, run, service_fn, Error as LambdaError, Request as LambdaRequest,
+    Response as LambdaResponse,
 };
 use serde::{Deserialize, Serialize};
-use std::path::{Path, PathBuf};
-use std::time::Duration;
-use tracing::{error, Value};
+use std::{
+    path::{Path, PathBuf},
+    time::Duration,
+};
+use tracing::warn;
 use uuid::Uuid;
 
 mod common;
-use crate::common::errors::Error;
-use crate::common::utils::extract_request;
-use common::BUCKET_NAME_DEFAULT;
+use crate::common::{errors::Error, utils::extract_request, BUCKET_NAME_DEFAULT};
 
 const MAX_FILES: usize = 300;
 const OBJECT_EXPIRATION_TIME: Duration = Duration::from_secs(24 * 60 * 60);
 
-const PAYLOAD_EMPTY_ERROR: &str = "Request payload is empty";
 const EXCEEDED_MAX_FILES_ERROR: &str = "Exceeded max number of files";
 
 #[derive(Debug, Deserialize)]
 struct Request {
-    pub files: Vec<PathBuf>,
     // TODO: add files_md5. Use set_content_md5 on object
+    pub files: Vec<PathBuf>,
 }
 
 #[derive(Debug, Serialize)]
@@ -62,7 +60,7 @@ async fn generate_presigned_urs(
     })
 }
 
-#[tracing::instrument]
+#[tracing::instrument(skip(bucket_name, s3_client))]
 async fn process_request(
     request: LambdaRequest,
     bucket_name: &str,
@@ -70,6 +68,7 @@ async fn process_request(
 ) -> Result<LambdaResponse<String>, Error> {
     let request = extract_request::<Request>(request)?;
     if request.files.len() > MAX_FILES {
+        warn!("MAX_FILES limit exceeded");
         let response = LambdaResponse::builder()
             .status(400)
             .header("content-type", "text/html")
@@ -89,7 +88,6 @@ async fn process_request(
 }
 
 // TODO: setup ratelimiter for lambdas
-
 #[tokio::main]
 async fn main() -> Result<(), LambdaError> {
     tracing_subscriber::fmt()

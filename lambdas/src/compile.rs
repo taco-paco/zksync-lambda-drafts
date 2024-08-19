@@ -1,16 +1,13 @@
 use aws_config::BehaviorVersion;
-use aws_sdk_dynamodb::error::SdkError;
-use aws_sdk_dynamodb::operation::put_item::PutItemError;
-use aws_sdk_dynamodb::types::AttributeValue;
+use aws_sdk_dynamodb::{error::SdkError, operation::put_item::PutItemError};
 use lambda_http::{
-    run, service_fn, Error as LambdaError, LambdaEvent, Request as LambdaRequest,
-    Response as LambdaResponse,
+    run, service_fn, Error as LambdaError, Request as LambdaRequest, Response as LambdaResponse,
 };
-use serde::{Deserialize, Deserializer, Serialize};
+use serde::Deserialize;
+use std::ops::Add;
 use tracing::{error, info};
 
 mod common;
-use crate::common::errors::Error::HttpError;
 use crate::common::{errors::Error, utils::extract_request, Item, Status, BUCKET_NAME_DEFAULT};
 
 const QUEUE_URL_DEFAULT: &str = "https://sqs.ap-southeast-2.amazonaws.com/266735844848/zksync-sqs";
@@ -22,9 +19,6 @@ const NO_OBJECTS_TO_COMPILE_ERROR: &str = "There are no objects to compile";
 struct Request {
     pub id: String,
 }
-
-#[derive(Debug, Serialize)]
-struct Response {}
 
 // impl Deserialize for Response {
 //     fn deserialize<'de, D>(deserializer: D) -> Result<Self, D::Error> where D: Deserializer<'de> {
@@ -38,7 +32,6 @@ struct Response {}
 //    // pub other_data: String
 // }
 
-// TODO: maybe needs s3_client to check that files uploaded. Or fail on EC2 side?
 async fn compile(
     id: String,
     dynamo_client: &aws_sdk_dynamodb::Client,
@@ -46,45 +39,37 @@ async fn compile(
     sqs_client: &aws_sdk_sqs::Client,
     queue_url: &str,
 ) -> Result<(), Error> {
-    info!("Check if same id exists in db");
     let item = Item {
         id: id.clone(),
         status: Status::Pending,
     };
 
-    {
-        info!("Initializing item with id: {}", id.clone());
-        let result = dynamo_client
-            .put_item()
-            .table_name(table_name)
-            .set_item(Some(item.into()))
-            .condition_expression("attribute_not_exists(ID)")
-            .send()
-            .await;
+    let result = dynamo_client
+        .put_item()
+        .table_name(table_name)
+        .set_item(Some(item.into()))
+        .condition_expression("attribute_not_exists(ID)")
+        .send()
+        .await;
 
-        let response = match result {
-            Ok(val) => val,
-            Err(SdkError::ServiceError(val)) => match val.err() {
-                PutItemError::ConditionalCheckFailedException(_) => {
-                    error!("Recompilation attempt");
+    match result {
+        Ok(val) => val,
+        Err(SdkError::ServiceError(val)) => match val.err() {
+            PutItemError::ConditionalCheckFailedException(_) => {
+                error!("Recompilation attempt, id: {}", id);
+                let response = lambda_http::Response::builder()
+                    .status(400)
+                    .header("content-type", "text/html")
+                    .body("Recompilation attempt".into())
+                    .map_err(Error::from)?;
 
-                    let response = lambda_http::Response::builder()
-                        .status(400)
-                        .header("content-type", "text/html")
-                        .body("Recompilation attempt".into())
-                        .map_err(Error::from)?;
-
-                    return Err(HttpError(response));
-                }
-                _ => return Err(Box::new(SdkError::ServiceError(val)).into())
+                return Err(Error::HttpError(response));
             }
-            Err(err)  => return Err((Box::new(err).into()))
-        };
+            _ => return Err(Box::new(SdkError::ServiceError(val)).into()),
+        },
+        Err(err) => return Err(Box::new(err).into()),
+    };
 
-        info!("Initialized: {:?}", response);
-    }
-
-    info!("Sending message to SQS");
     let message_output = sqs_client
         .send_message()
         .queue_url(queue_url)
@@ -94,14 +79,21 @@ async fn compile(
         .map_err(Box::new)?;
 
     info!(
-        "message sent to sqs: {}",
+        "message sent to sqs. message_id: {}",
         message_output.message_id.unwrap_or("empty_id".into())
     );
 
     Ok(())
 }
 
-#[tracing::instrument]
+#[tracing::instrument(skip(
+    dynamo_client,
+    table_name,
+    sqs_client,
+    queue_url,
+    s3_client,
+    bucket_name
+))]
 async fn process_request(
     request: LambdaRequest,
     dynamo_client: &aws_sdk_dynamodb::Client,
@@ -113,20 +105,17 @@ async fn process_request(
 ) -> Result<LambdaResponse<String>, Error> {
     let request = extract_request::<Request>(request)?;
 
-    info!("Checking if objects in folder");
     let objects = s3_client
         .list_objects_v2()
         .delimiter('/')
-        .prefix(request.id.clone())
+        .prefix(request.id.clone().add("/"))
         .bucket(bucket_name)
         .send()
         .await
         .map_err(Box::new)?;
 
-    if let Some(contents) = &objects.contents {
-        info!("objects num: {}", contents.len());
-    } else {
-        error!("No objects in folder");
+    if let None = &objects.contents {
+        error!("No objects in folder: {}", request.id);
         let response = LambdaResponse::builder()
             .status(400)
             .header("content-type", "text/html")
@@ -136,7 +125,7 @@ async fn process_request(
         return Err(Error::HttpError(response));
     }
 
-    info!("Intitializing compilation");
+    info!("Compile");
     compile(request.id, dynamo_client, table_name, sqs_client, queue_url).await?;
 
     let response = LambdaResponse::builder()

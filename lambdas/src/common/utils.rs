@@ -1,9 +1,7 @@
 use lambda_http::{Request, RequestPayloadExt, Response};
 use serde::de::DeserializeOwned;
-use serde::{Deserialize, Deserializer};
 
-use crate::common::errors::Error;
-use crate::common::errors::Error::{HttpError, LambdaError};
+use crate::common::errors::{Error, Error::HttpError};
 
 const EMPTY_PAYLOAD_ERROR: &str = "Request payload is empty";
 
