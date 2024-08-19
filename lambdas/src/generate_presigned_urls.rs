@@ -12,6 +12,7 @@ use tracing::{error, Value};
 use uuid::Uuid;
 
 mod common;
+use crate::common::errors::Error;
 use crate::common::utils::extract_request;
 use common::BUCKET_NAME_DEFAULT;
 
@@ -37,7 +38,7 @@ async fn generate_presigned_urs(
     files: Vec<PathBuf>,
     bucket_name: &str,
     s3_client: &aws_sdk_s3::Client,
-) -> Result<Response, LambdaError> {
+) -> Result<Response, Error> {
     let uuid = Uuid::new_v4();
     let uuid_str = uuid.to_string();
     let uuid_dir = Path::new(&uuid_str);
@@ -49,7 +50,8 @@ async fn generate_presigned_urs(
             .bucket(bucket_name)
             .key(uuid_dir.join(file).to_string_lossy().to_string())
             .presigned(PresigningConfig::expires_in(OBJECT_EXPIRATION_TIME).map_err(Box::new)?)
-            .await?;
+            .await
+            .map_err(Box::new)?;
 
         output.push(presigned.uri().into());
     }
@@ -65,8 +67,8 @@ async fn process_request(
     request: LambdaRequest,
     bucket_name: &str,
     s3_client: &aws_sdk_s3::Client,
-) -> Result<LambdaResponse<String>, LambdaError> {
-    let request = extract_request(request)??;
+) -> Result<LambdaResponse<String>, Error> {
+    let request = extract_request::<Request>(request)?;
     if request.files.len() > MAX_FILES {
         let response = LambdaResponse::builder()
             .status(400)
@@ -74,7 +76,7 @@ async fn process_request(
             .body(EXCEEDED_MAX_FILES_ERROR.into())
             .map_err(Box::new)?;
 
-        return Ok(response);
+        return Err(Error::HttpError(response));
     }
 
     let response = generate_presigned_urs(request.files, bucket_name, s3_client).await?;
@@ -102,7 +104,13 @@ async fn main() -> Result<(), LambdaError> {
     let s3_client = aws_sdk_s3::Client::new(&aws_config);
 
     run(service_fn(|request: LambdaRequest| async {
-        process_request(request, &bucket_name, &s3_client).await
+        let result = process_request(request, &bucket_name, &s3_client).await;
+
+        match result {
+            Ok(val) => Ok(val),
+            Err(Error::HttpError(val)) => Ok(val),
+            Err(Error::LambdaError(err)) => Err(err),
+        }
     }))
     .await
 }
