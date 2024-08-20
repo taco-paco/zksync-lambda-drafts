@@ -1,6 +1,3 @@
-# Compilation artifacts
-target
-
 # IDE
 .idea
 
@@ -8,6 +5,13 @@ target
 node_modules
 index.js
 
+# Compilation artifacts
+target
+
 # macOS
 /.DS_Store
 /lambdas/.DS_Store
+/lambdas/src/.DS_Store
+
+# credentials
+/worker/credentials
