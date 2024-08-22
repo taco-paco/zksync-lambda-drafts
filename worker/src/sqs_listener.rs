@@ -10,8 +10,8 @@ use tokio::time::sleep;
 
 use crate::sqs_client::SqsClient;
 
-#[derive(Clone)]
 pub struct SqsListener {
+    handle: JoinHandle<Result<(), ReceiveError>>,
     receiver: Receiver<Message>,
     client: SqsClient,
 }
@@ -20,14 +20,12 @@ impl SqsListener {
     pub fn new(
         client: SqsClient,
         poll_interval: Duration,
-    ) -> (Self, JoinHandle<Result<(), ReceiveError>>) {
+    ) -> Self {
         // TODO: unbounded?
         let (sender, receiver) = async_channel::bounded(1000);
         let handle = tokio::spawn(Self::listen(client.clone(), sender, poll_interval));
-        // TODO: close?
-        // let (done_notifier, done_receiver) = tokio::sync::oneshot::channel();
 
-        (Self { receiver, client }, handle)
+        Self { handle, receiver, client}
     }
 
     async fn listen(
@@ -53,6 +51,24 @@ impl SqsListener {
         }
     }
 
+    pub fn receiver(&self) -> SqsReceiver {
+        SqsReceiver {
+            client: self.client.clone(),
+            receiver: self.receiver.clone(),
+        }
+    }
+
+    pub fn handle(self) ->  JoinHandle<Result<(), ReceiveError>> {
+        self.handle
+    }
+}
+
+pub struct SqsReceiver {
+    client: SqsClient,
+    receiver: Receiver<Message>,
+}
+
+impl SqsReceiver {
     pub fn recv(&self) -> Recv<'_, Message> {
         self.receiver.recv()
     }
@@ -62,28 +78,5 @@ impl SqsListener {
         receipt_handle: impl Into<String>,
     ) -> Result<(), DeleteError> {
         self.client.delete_message(receipt_handle).await
-    }
-
-    // TODO: done/close
-}
-
-struct RunningSqsListener {
-    join_handle: JoinHandle<Result<(), ReceiveError>>,
-    sqs_listener: SqsListener,
-}
-
-impl RunningSqsListener {
-    pub fn new(
-        join_handle: JoinHandle<Result<(), ReceiveError>>,
-        sqs_listener: SqsListener,
-    ) -> Self {
-        Self {
-            join_handle,
-            sqs_listener,
-        }
-    }
-
-    pub fn sqs_listener(&self) -> &SqsListener {
-        &self.sqs_listener
     }
 }
